@@ -118,6 +118,7 @@ h1,h2,h3,h4{font-weight:600;letter-spacing:-0.02em;color:var(--text)}
 /* ===== CARDS / GRID ===== */
 .grid{display:grid;gap:14px}
 .grid-4{grid-template-columns:repeat(4,1fr)}
+.grid-5{grid-template-columns:repeat(5,1fr)}
 .grid-3{grid-template-columns:repeat(3,1fr)}
 .grid-2{grid-template-columns:repeat(2,1fr)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:20px;transition:all .15s;box-shadow:var(--shadow-sm)}
@@ -355,7 +356,7 @@ textarea.input{resize:vertical;min-height:80px;font-family:inherit}
   .topbar .gold-ticker .item{gap:4px;flex-shrink:0}
   .topbar .gold-ticker .item + .item{padding-left:6px}
   .topbar .gold-ticker .live-dot{flex-shrink:0}
-  .grid-4{grid-template-columns:repeat(2,1fr)}
+  .grid-4,.grid-5{grid-template-columns:repeat(2,1fr)}
   .grid-3{grid-template-columns:1fr}
   .grid-2{grid-template-columns:1fr}
   .kanban{grid-template-columns:1fr !important}
@@ -459,7 +460,7 @@ textarea.input{resize:vertical;min-height:80px;font-family:inherit}
 
 /* ===== Small phone (≤400px) ===== */
 @media (max-width:400px){
-  .grid-4{grid-template-columns:1fr 1fr}
+  .grid-4,.grid-5{grid-template-columns:1fr 1fr}
   .role-grid{grid-template-columns:1fr}
   .gold-ticker{font-size:10px;padding:4px 8px;gap:5px}
   .gold-ticker .label{font-size:8px}
@@ -616,6 +617,22 @@ const LOGO_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAhYAAADICAYAAAC
 document.getElementById('loginLogo').src = LOGO_DATA;
 document.getElementById('loginLogo2').src = LOGO_DATA;
 document.getElementById('topLogo').src = LOGO_DATA;
+
+// === FAVICON (uses the same LOGO_DATA — change the logo and the tab icon updates too) ===
+(function setFavicon(){
+  try{
+    document.querySelectorAll("link[rel~='icon']").forEach(el=>el.remove());
+    const link = document.createElement('link');
+    link.rel = 'icon';
+    link.type = 'image/png';
+    link.href = LOGO_DATA;
+    document.head.appendChild(link);
+    const apple = document.createElement('link');
+    apple.rel = 'apple-touch-icon';
+    apple.href = LOGO_DATA;
+    document.head.appendChild(apple);
+  }catch(e){ console.warn('Favicon set failed', e); }
+})();
 
 // ===== STATE & STORAGE =====
 const KEY = 'puregold_v2';
@@ -3559,6 +3576,7 @@ function taskCardHTML(t, viewMode='staff'){
         `;
       } else {
         actions = `
+          <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();managerMarkDone(${t.id})">✓ Mark done</button>
           <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();remindTask(${t.id})">Remind</button>
           <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openTaskDetail(${t.id})">Detail</button>
         `;
@@ -3629,6 +3647,7 @@ function openTaskDetail(id){
     </div>
     <div class="flex gap-8" style="margin-top:18px">
       ${isManager() && t.awaitingConfirm ? `<button class="btn btn-primary" onclick="managerConfirmTask(${t.id});closeModal()">✓ Confirm completion</button>` : ''}
+      ${isManager() && !t.done && !t.awaitingConfirm ? `<button class="btn btn-primary" onclick="managerMarkDone(${t.id});closeModal()">✓ Mark done</button>` : ''}
       ${isManager() && !t.done && !t.awaitingConfirm ? `<button class="btn btn-ghost" onclick="remindTask(${t.id});closeModal()">Send reminder</button>` : ''}
       ${!isManager() && taskIsMine(t) && !t.done && !t.awaitingConfirm ? `<button class="btn btn-primary" onclick="staffMarkDone(${t.id});closeModal()">Mark Done</button>` : ''}
       ${isManager() ? `<button class="btn btn-ghost" onclick="openEditTaskModal(${t.id})">Edit</button>` : ''}
@@ -3682,6 +3701,30 @@ function managerConfirmTask(id){
   pushAuditLog('task.confirm', `Task #${id} "${t.title}" confirmed done`);
   saveState(); renderPage();
   toast(`Task confirmed done ✓`,'success');
+}
+
+function managerMarkDone(id){
+  if(!isManager()) return toast('Only Manager can do this','error');
+  const t = S.tasks.find(x=>x.id===id);
+  if(!t) return;
+  t.done = true;
+  t.awaitingConfirm = false;
+  t.confirmedAt = Date.now();
+  if(!t.markedDoneAt) t.markedDoneAt = Date.now();
+  t.updatedAt = Date.now();
+  t.updatedBy = S.currentRole;
+  // Notify assignees (other than the Manager) that the task was completed
+  taskAssignees(t).forEach(a=>{
+    if(a==='Manager') return;
+    S.notifications.push({
+      id: Date.now()+Math.random(),
+      text: `✓ Manager marked done: "${t.title}"`,
+      read:false, ts:Date.now(), forUser:a
+    });
+  });
+  pushAuditLog('task.managerdone', `Task #${id} "${t.title}" marked done by Manager`);
+  saveState(); renderPage();
+  toast('Task marked done ✓','success');
 }
 
 function reopenTask(id){
@@ -5002,11 +5045,12 @@ pageRenderers.inventory = (m) => {
         </div>`:''}
     </div>
 
-    <div class="grid grid-4 mb-24">
+    <div class="grid grid-5 mb-24">
       <div class="card" onclick="window.__invFilter='Gold';renderPage()" style="cursor:pointer;${filter==='Gold'?'border-color:var(--gold);background:var(--gold-soft)':''}"><div class="card-title">Gold Items</div><div class="card-value"><em>${fmt(totalGold)}</em></div><div class="card-meta">click to filter</div></div>
       <div class="card" onclick="window.__invFilter='Silver';renderPage()" style="cursor:pointer;${filter==='Silver'?'border-color:var(--gold);background:var(--gold-soft)':''}"><div class="card-title">Silver Items</div><div class="card-value">${fmt(totalSilver)}</div><div class="card-meta">click to filter</div></div>
       <div class="card" onclick="window.__invFilter='Keychain';renderPage()" style="cursor:pointer;${filter==='Keychain'?'border-color:var(--gold);background:var(--gold-soft)':''}"><div class="card-title">Keychains</div><div class="card-value">${fmt(totalKey)}</div><div class="card-meta">click to filter</div></div>
       <div class="card" onclick="window.__invFilter='all';renderPage()" style="cursor:pointer;${filter==='all'?'border-color:var(--gold);background:var(--gold-soft)':''}"><div class="card-title">${lowStock>0?'Low Stock':'All Items'}</div><div class="card-value" style="color:${lowStock>0?'var(--red)':'var(--green)'}">${lowStock>0?lowStock:fmt(totalGold+totalSilver+totalKey)}</div><div class="card-meta">${lowStock>0?'≤ 5 units · click to clear':'click to show all'}</div></div>
+      <div class="card" onclick="window.__invFilter='all';renderPage()" style="cursor:pointer;border-color:var(--gold-dark);background:var(--gold-soft)"><div class="card-title">Total Items</div><div class="card-value"><em>${fmt(totalGold+totalSilver+totalKey)}</em></div><div class="card-meta">all products · all warehouses</div></div>
     </div>
 
     ${filter!=='all'?`<div class="muted mb-16" style="font-size:12px">Showing <strong>${escapeHtml(filter)}</strong> items only · <a href="#" onclick="event.preventDefault();window.__invFilter='all';renderPage()" style="color:var(--gold-dark)">clear filter</a></div>`:''}
@@ -8372,6 +8416,7 @@ window.updateEditSalePaymentVisibility = updateEditSalePaymentVisibility;
 window.editSalesGuides = editSalesGuides; window.saveSalesGuides = saveSalesGuides;
 window.openTaskDetail = openTaskDetail; window.staffMarkDone = staffMarkDone;
 window.managerConfirmTask = managerConfirmTask; window.reopenTask = reopenTask;
+window.managerMarkDone = managerMarkDone;
 window.remindTask = remindTask; window.openEditTaskModal = openEditTaskModal;
 window.saveEditedTask = saveEditedTask;
 window.toggleShipmentExpand = toggleShipmentExpand; window.setShipCheckStaff = setShipCheckStaff;
