@@ -2102,6 +2102,8 @@ const DEFAULT_STATE = {
   "atmIdSeq": 6,
   "libraryIdSeq": 3,
   "caseIdSeq": 5,
+  "transfers": [],
+  "transferIdSeq": 1,
   "globalUpdatedAt": 0
 };
 
@@ -2308,6 +2310,17 @@ function loadState(){
         if(sh.checks[phase]){
           sh.checks[phase].forEach(c=>{ if(c.s===undefined) c.s = ''; });
         }
+      }
+    });
+
+    // Ensure transfers ledger exists (migrate old data)
+    if(!Array.isArray(merged.transfers)) merged.transfers = [];
+    if(typeof merged.transferIdSeq !== 'number') merged.transferIdSeq = merged.transfers.length + 1;
+    // Normalize legacy single-product transfers into multi-product (items) shape
+    merged.transfers.forEach(t=>{
+      if(!Array.isArray(t.items)){
+        t.items = t.productId ? [{productId:t.productId, qty:t.qty||0}] : [];
+        delete t.productId; delete t.qty;
       }
     });
 
@@ -4982,6 +4995,7 @@ pageRenderers.inventory = (m) => {
       ${isManager()?`
         <div class="flex gap-8 flex-wrap">
           <button class="btn btn-primary" onclick="openProductModal(-1)">+ New Product</button>
+          <button class="btn btn-ghost" onclick="openTransferModal(-1)">⇄ Transfer Stock</button>
           <input type="file" id="invFile" accept=".xlsx,.xls,.csv" style="display:none" onchange="importInventory(event)">
           <button class="btn btn-ghost" onclick="document.getElementById('invFile').click()">Upload Excel</button>
           <button class="btn btn-ghost" onclick="downloadInvTemplate()">Template</button>
@@ -5063,6 +5077,76 @@ pageRenderers.inventory = (m) => {
 
     <div class="muted" style="margin-top:14px;font-size:12px">
       Excel format: <strong>Product ID</strong> · <strong>Product Name</strong> · <strong>Product Type</strong> (Gold/Silver/Keychain) · <strong>Quantity</strong> · <strong>Warehouse</strong>. Upload <em>adds new quantities to existing stock</em>.
+    </div>
+
+    <div class="section" style="margin-top:36px">
+      <div class="section-title">Stock Transfers
+        ${isManager()?`
+          <button class="btn btn-ghost btn-sm" style="margin-left:auto;padding:4px 10px;font-size:12px" onclick="openTransferModal(-1)">⇄ New transfer</button>
+          <input type="file" id="trFile" accept=".xlsx,.xls,.csv" style="display:none" onchange="importTransfers(event)">
+          <button class="btn btn-ghost btn-sm" style="padding:4px 10px;font-size:12px" onclick="document.getElementById('trFile').click()">Upload Excel</button>
+          <button class="btn btn-ghost btn-sm" style="padding:4px 10px;font-size:12px" onclick="downloadTransferTemplate()">Template</button>
+        `:''}
+      </div>
+      ${(() => {
+        const transfers = [...(S.transfers||[])].sort((a,b)=>{
+          const da = (a.date||'')+' '+(a.createdAt||0);
+          const db = (b.date||'')+' '+(b.createdAt||0);
+          return db.localeCompare(da);
+        });
+        if(transfers.length===0){
+          return `<div class="card empty" style="padding:28px"><div class="empty-title">No transfers yet</div><div class="muted" style="font-size:12px;margin-top:4px">Move stock between warehouses with the "Transfer Stock" button above.</div></div>`;
+        }
+        return `
+        <div class="card" style="padding:0;overflow:hidden">
+          <div style="overflow:auto">
+            <table class="inv-table" style="min-width:max-content">
+              <thead style="background:var(--soft)">
+                <tr>
+                  <th style="white-space:nowrap">Date</th>
+                  <th style="white-space:nowrap">Product</th>
+                  <th style="white-space:nowrap">From</th>
+                  <th style="white-space:nowrap">To</th>
+                  <th style="text-align:right;white-space:nowrap">Qty</th>
+                  <th style="white-space:nowrap">Note</th>
+                  ${isManager()?`<th style="text-align:right;white-space:nowrap">Actions</th>`:''}
+                </tr>
+              </thead>
+              <tbody>
+                ${transfers.map(t=>{
+                  const realIdx = S.transfers.indexOf(t);
+                  const items = _transferItems(t);
+                  const totalQty = items.reduce((a,it)=>a+(it.qty||0),0);
+                  const prodHtml = items.map(it=>{
+                    const prod = S.products.find(p=>p.id===it.productId);
+                    const pname = prod ? prod.name : '(deleted)';
+                    return `<div style="white-space:nowrap"><strong>${escapeHtml(it.productId)}</strong> <span class="muted" style="font-size:12px">${escapeHtml(pname)}</span> <span class="gold" style="font-weight:700">×${fmt(it.qty)}</span></div>`;
+                  }).join('');
+                  return `
+                    <tr>
+                      <td style="white-space:nowrap;vertical-align:top">${escapeHtml(t.date||'')}</td>
+                      <td style="vertical-align:top">${prodHtml}${items.length>1?`<div class="muted" style="font-size:11px;margin-top:2px">${items.length} products</div>`:''}</td>
+                      <td style="white-space:nowrap;vertical-align:top">${escapeHtml(t.from)}</td>
+                      <td style="white-space:nowrap;vertical-align:top"><span class="gold">${escapeHtml(t.to)}</span></td>
+                      <td style="text-align:right;font-weight:700;font-variant-numeric:tabular-nums;vertical-align:top">${fmt(totalQty)}</td>
+                      <td class="muted" style="font-size:12px;max-width:220px;vertical-align:top">${escapeHtml(t.note||'')}</td>
+                      ${isManager()?`
+                        <td style="text-align:right;white-space:nowrap;vertical-align:top">
+                          <button class="btn btn-ghost btn-sm" style="padding:3px 8px;font-size:11px" onclick="openTransferModal(${realIdx})">Edit</button>
+                          <button class="btn btn-ghost btn-sm" style="padding:3px 8px;font-size:11px;color:var(--red)" onclick="deleteTransfer(${realIdx})">×</button>
+                        </td>
+                      `:''}
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="muted" style="margin-top:10px;font-size:12px">
+          One transfer can move several products at once from <strong>From</strong> to <strong>To</strong>. Editing or deleting a transfer automatically corrects warehouse balances. Excel columns: <strong>Product ID</strong> · <strong>From</strong> · <strong>To</strong> · <strong>Quantity</strong> · <strong>Date</strong> · <strong>Note</strong> — rows sharing the same From + To + Date are grouped into one transfer.
+        </div>`;
+      })()}
     </div>
   `;
 };
@@ -5284,6 +5368,330 @@ function deleteProduct(idx){
   S.products.splice(idx,1);
   saveState(); closeModal(); renderPage();
   toast(`Product "${p.name}" deleted`,'success');
+}
+
+/* ---------- WAREHOUSE TRANSFERS ---------- */
+// Move stock: from -= qty, to += qty. sign=-1 reverses the movement.
+function _applyTransferDelta(productId, from, to, qty, sign){
+  const p = S.products.find(pp=>pp.id===productId);
+  if(!p) return false;
+  if(!p.warehouses) p.warehouses = {};
+  p.warehouses[from] = (p.warehouses[from]||0) - sign*qty;
+  p.warehouses[to]   = (p.warehouses[to]||0)   + sign*qty;
+  return true;
+}
+
+function _warehouseNames(){
+  return [...new Set([
+    ...S.products.flatMap(pp=>Object.keys(pp.warehouses||{})),
+    'Online Warehouse',
+    ...S.atms.map(a=>a.name)
+  ])];
+}
+
+function _parseTransferDate(v){
+  if(v==='' || v==null) return today();
+  if(typeof v === 'number' && window.XLSX && XLSX.SSF){
+    const d = XLSX.SSF.parse_date_code(v);
+    if(d) return `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
+  }
+  const s = String(v).trim();
+  const m = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  if(m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+  return s || today();
+}
+
+// Normalize a transfer to an items array (supports old single-product shape)
+function _transferItems(t){
+  if(t && Array.isArray(t.items)) return t.items;
+  if(t && t.productId) return [{productId:t.productId, qty:t.qty||0}];
+  return [];
+}
+// Apply/reverse every line in a transfer
+function _applyTransferAll(t, sign){
+  _transferItems(t).forEach(it=>_applyTransferDelta(it.productId, t.from, t.to, it.qty, sign));
+}
+// Build <option> list for a product dropdown
+function _transferProductOptions(sel){
+  const typeOrder = {Gold:1, Silver:2, Keychain:3};
+  const prods = [...S.products].sort((a,b)=>{
+    const ta=typeOrder[a.type]||99, tb=typeOrder[b.type]||99;
+    if(ta!==tb) return ta-tb;
+    return String(a.id).localeCompare(String(b.id));
+  });
+  return `<option value="">— Select product —</option>` +
+    prods.map(p=>`<option value="${escapeHtml(p.id)}" ${sel===p.id?'selected':''}>${escapeHtml(p.id)} — ${escapeHtml(p.name)} (${escapeHtml(p.type)})</option>`).join('');
+}
+
+function addTransferItemRow(productId='', qty=1){
+  const c = document.getElementById('trItems');
+  if(!c) return;
+  const div = document.createElement('div');
+  div.className = 'flex gap-8';
+  div.style.cssText = 'margin-bottom:8px;align-items:flex-start';
+  div.setAttribute('data-tr-item','');
+  div.innerHTML = `
+    <div style="flex:1">
+      <select class="input" data-tr-pid onchange="updateTransferHints()">${_transferProductOptions(productId)}</select>
+      <div class="muted" data-tr-hint style="font-size:11px;margin-top:3px;min-height:14px"></div>
+    </div>
+    <input class="input" data-tr-qty type="number" min="1" style="width:88px;text-align:right" value="${qty||1}">
+    <button type="button" class="btn btn-ghost btn-sm" style="padding:6px 10px" title="Remove line" onclick="this.closest('[data-tr-item]').remove();updateTransferHints()">×</button>
+  `;
+  c.appendChild(div);
+  updateTransferHints();
+}
+
+// Update the "in <warehouse>: N" hint under each product line
+function updateTransferHints(){
+  const from = $('#trFrom') ? $('#trFrom').value : '';
+  document.querySelectorAll('[data-tr-item]').forEach(row=>{
+    const pid = row.querySelector('[data-tr-pid]').value;
+    const hint = row.querySelector('[data-tr-hint]');
+    if(!hint) return;
+    const p = S.products.find(pp=>pp.id===pid);
+    if(p && from){ hint.innerHTML = `In <strong>${escapeHtml(from)}</strong>: ${(p.warehouses[from]||0)}`; }
+    else hint.textContent='';
+  });
+}
+
+function openTransferModal(idx){
+  if(!isManager()) return;
+  const isNew = idx===-1;
+  const t = isNew ? {from:'', to:'', date:today(), note:'', items:[]} : S.transfers[idx];
+  if(!t) return;
+
+  const warehouses = _warehouseNames();
+  const existingItems = _transferItems(t);
+
+  modal(`
+    <h3>${isNew?'Transfer Stock':'Edit Transfer'}</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:14px">Move one or more products from one warehouse to another. Balances update automatically.</div>
+    <div class="input-row">
+      <div class="form-row" style="flex:1">
+        <label class="label">From warehouse</label>
+        <select class="input" id="trFrom" onchange="updateTransferHints()">
+          <option value="">— Select —</option>
+          ${warehouses.map(w=>`<option value="${escapeHtml(w)}" ${t.from===w?'selected':''}>${escapeHtml(w)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-row" style="flex:1">
+        <label class="label">To warehouse</label>
+        <select class="input" id="trTo">
+          <option value="">— Select —</option>
+          ${warehouses.map(w=>`<option value="${escapeHtml(w)}" ${t.to===w?'selected':''}>${escapeHtml(w)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="form-row" style="border-top:1px solid var(--line);padding-top:14px">
+      <label class="label">Products to move</label>
+      <div class="muted" style="font-size:12px;margin-bottom:8px">Add as many products as you need, each with its own quantity.</div>
+      <div id="trItems"></div>
+      <button type="button" class="btn btn-ghost btn-sm" style="margin-top:4px" onclick="addTransferItemRow()">+ Add product</button>
+    </div>
+    <div class="input-row" style="margin-top:6px">
+      <div class="form-row" style="flex:1">
+        <label class="label">Date</label>
+        <input class="input" id="trDate" type="date" value="${escapeHtml(t.date||today())}">
+      </div>
+      <div class="form-row" style="flex:2">
+        <label class="label">Note (optional)</label>
+        <input class="input" id="trNote" value="${escapeHtml(t.note||'')}" placeholder="e.g., monthly refill for MBK">
+      </div>
+    </div>
+    <div class="flex gap-8" style="margin-top:18px;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="saveTransfer(${idx})">${isNew?'Apply transfer':'Save changes'}</button>
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      ${!isNew?`<button class="btn btn-ghost" style="color:var(--red);margin-left:auto" onclick="deleteTransfer(${idx})">Delete transfer</button>`:''}
+    </div>
+  `);
+
+  // Populate product rows
+  if(existingItems.length){
+    existingItems.forEach(it=>addTransferItemRow(it.productId, it.qty));
+  } else {
+    addTransferItemRow();
+  }
+  updateTransferHints();
+}
+
+// Read product lines from the modal DOM; merges duplicate products
+function _readTransferItemsFromDOM(){
+  const items = [], seen = {};
+  let badQty = false;
+  document.querySelectorAll('[data-tr-item]').forEach(row=>{
+    const pid = row.querySelector('[data-tr-pid]').value;
+    const q = parseInt(row.querySelector('[data-tr-qty]').value)||0;
+    if(!pid) return;
+    if(q<=0){ badQty = true; return; }
+    if(seen[pid]!==undefined){ items[seen[pid]].qty += q; }
+    else { seen[pid] = items.length; items.push({productId:pid, qty:q}); }
+  });
+  return {items, badQty};
+}
+
+function saveTransfer(idx){
+  if(!isManager()) return;
+  const isNew = idx===-1;
+  const from = $('#trFrom').value;
+  const to = $('#trTo').value;
+  const date = $('#trDate').value || today();
+  const note = $('#trNote').value.trim();
+
+  if(!from || !to) return toast('Select both From and To warehouses','error');
+  if(from===to) return toast('From and To must be different','error');
+
+  const {items, badQty} = _readTransferItemsFromDOM();
+  if(badQty) return toast('Each product line needs a quantity greater than 0','error');
+  if(items.length===0) return toast('Add at least one product','error');
+  for(const it of items){
+    if(!S.products.find(p=>p.id===it.productId)) return toast('Product not found: '+it.productId,'error');
+  }
+
+  // Reverse the old transfer first (editing) so availability reflects corrected balances
+  const old = isNew ? null : S.transfers[idx];
+  if(old) _applyTransferAll(old, -1);
+
+  // Cumulative availability check per product in the source warehouse
+  const neg = [];
+  items.forEach(it=>{
+    const p = S.products.find(pp=>pp.id===it.productId);
+    const avail = (p.warehouses[from]||0);
+    if(avail < it.qty) neg.push(`${it.productId}: have ${avail}, moving ${it.qty}`);
+  });
+  if(neg.length){
+    if(!confirm(`⚠ Some products exceed available stock in "${from}" and will go negative:\n${neg.join('\n')}\n\nProceed anyway?`)){
+      if(old) _applyTransferAll(old, 1); // restore
+      return;
+    }
+  }
+
+  const t = old || {};
+  t.from = from; t.to = to; t.date = date; t.note = note; t.items = items;
+  delete t.productId; delete t.qty; // remove any legacy single-product fields
+
+  if(isNew){
+    t.id = 'TR-' + String(S.transferIdSeq++).padStart(4,'0');
+    t.createdBy = S.currentRole; t.createdAt = Date.now();
+    S.transfers.push(t);
+  }
+  _applyTransferAll(t, 1);
+
+  const totalQty = items.reduce((a,it)=>a+it.qty,0);
+  pushAuditLog(isNew?'transfer.create':'transfer.edit', `${items.length} product(s), ${totalQty} units: ${from} -> ${to}`);
+  saveState(); closeModal(); renderPage();
+  toast(isNew?`Transferred ${items.length} product(s) (${totalQty} units): ${from} → ${to}`:'Transfer updated','success');
+}
+
+function deleteTransfer(idx){
+  if(!isManager()) return;
+  const t = S.transfers[idx];
+  if(!t) return;
+  const items = _transferItems(t);
+  const totalQty = items.reduce((a,it)=>a+it.qty,0);
+  if(!confirm(`Delete transfer ${t.id}?\n${items.length} product(s), ${totalQty} units: ${t.from} → ${t.to}\n\nStock will move back (${t.to} → ${t.from}).`)) return;
+  _applyTransferAll(t, -1);
+  S.transfers.splice(idx,1);
+  pushAuditLog('transfer.delete', `${items.length} product(s), ${totalQty} units: ${t.from} -> ${t.to}`);
+  saveState(); closeModal(); renderPage();
+  toast('Transfer deleted, stock restored','success');
+}
+
+function downloadTransferTemplate(){
+  const d = today();
+  const data = [
+    ['Product ID','From','To','Quantity','Date','Note'],
+    ['G-001','Online Warehouse','MBK Center',10,d,'monthly refill'],
+    ['G-002','Online Warehouse','MBK Center',5,d,'monthly refill'],
+    ['S-001','Online Warehouse','MBK Center',8,d,'monthly refill'],
+    ['G-001','Online Warehouse','Central Pattaya',4,d,''],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Transfers');
+  XLSX.writeFile(wb, 'puregold_transfers_template.xlsx');
+}
+
+function importTransfers(ev){
+  const f = ev.target.files[0];
+  if(!f) return;
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    try{
+      const data = new Uint8Array(e.target.result);
+      const wb = XLSX.read(data, {type:'array'});
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, {defval:''});
+      if(rows.length===0) throw new Error('Empty file');
+
+      const parsed = [], errors = [];
+      rows.forEach((r,i)=>{
+        const rowNum = i+2;
+        const productId = String(r['Product ID']||r['ProductID']||r['SKU']||'').trim();
+        const from = String(r['From']||r['From Warehouse']||r['FromWarehouse']||'').trim();
+        const to = String(r['To']||r['To Warehouse']||r['ToWarehouse']||'').trim();
+        const qty = parseInt(r['Quantity']||r['Qty']||0)||0;
+        const date = _parseTransferDate(r['Date']);
+        const note = String(r['Note']||'').trim();
+        if(!productId && !from && !to && !qty) return; // blank row
+        if(!productId){ errors.push(`Row ${rowNum}: missing Product ID`); return; }
+        if(!S.products.find(p=>p.id===productId)){ errors.push(`Row ${rowNum}: product "${productId}" not found`); return; }
+        if(!from || !to){ errors.push(`Row ${rowNum}: missing From/To`); return; }
+        if(from===to){ errors.push(`Row ${rowNum}: From and To are identical`); return; }
+        if(qty<=0){ errors.push(`Row ${rowNum}: quantity must be > 0`); return; }
+        parsed.push({productId, from, to, qty, date, note});
+      });
+
+      if(parsed.length===0){
+        throw new Error('No valid transfers found.' + (errors.length?'\n\n'+errors.slice(0,8).join('\n'):''));
+      }
+
+      // Group rows sharing From + To + Date into one transfer with multiple products
+      const groups = {};
+      parsed.forEach(r=>{
+        const key = r.from+'||'+r.to+'||'+r.date;
+        if(!groups[key]){ groups[key] = {from:r.from, to:r.to, date:r.date, note:r.note, items:[], _seen:{}}; }
+        const g = groups[key];
+        if(g._seen[r.productId]!==undefined){ g.items[g._seen[r.productId]].qty += r.qty; }
+        else { g._seen[r.productId] = g.items.length; g.items.push({productId:r.productId, qty:r.qty}); }
+        if(!g.note && r.note) g.note = r.note;
+      });
+      const groupList = Object.values(groups);
+
+      let msg = `Create ${groupList.length} transfer(s) from ${parsed.length} row(s)?`;
+      if(errors.length) msg += `\n\n${errors.length} row(s) will be skipped:\n${errors.slice(0,6).join('\n')}${errors.length>6?'\n…':''}`;
+
+      // Cumulative negative pre-check per product per source warehouse
+      const sim = {}, negWarn = [];
+      groupList.forEach(g=>{
+        g.items.forEach(it=>{
+          const key = it.productId+'|'+g.from;
+          const p = S.products.find(pp=>pp.id===it.productId);
+          if(sim[key]===undefined) sim[key] = (p.warehouses[g.from]||0);
+          sim[key] -= it.qty;
+          if(sim[key] < 0) negWarn.push(`${it.productId} @ ${g.from}`);
+        });
+      });
+      if(negWarn.length){
+        msg += `\n\n⚠ Some transfers exceed available stock and will make these go negative:\n${[...new Set(negWarn)].slice(0,6).join('\n')}`;
+      }
+      if(!confirm(msg)) { ev.target.value=''; return; }
+
+      groupList.forEach(g=>{
+        const t = {id:'TR-'+String(S.transferIdSeq++).padStart(4,'0'), from:g.from, to:g.to, date:g.date, note:g.note, items:g.items, createdBy:S.currentRole, createdAt:Date.now()};
+        _applyTransferAll(t, 1);
+        S.transfers.push(t);
+      });
+      pushAuditLog('transfer.import', `${groupList.length} transfers (${parsed.length} rows) from Excel`);
+      saveState(); renderPage();
+      toast(`Created ${groupList.length} transfer(s) from ${parsed.length} row(s)${errors.length?`, ${errors.length} skipped`:''}`,'success');
+    }catch(err){
+      toast('Import failed: '+err.message,'error');
+      console.error(err);
+    }
+    ev.target.value='';
+  };
+  reader.readAsArrayBuffer(f);
 }
 
 /* ---------- MEDIA ---------- */
@@ -7931,6 +8339,10 @@ window.openIdeaModal = openIdeaModal; window.saveIdea = saveIdea; window.toggleV
 window.markAllRead = markAllRead; window.closeModal = closeModal;
 window.checkIn = checkIn;
 window.importInventory = importInventory; window.downloadInvTemplate = downloadInvTemplate;
+window.openTransferModal = openTransferModal; window.saveTransfer = saveTransfer;
+window.deleteTransfer = deleteTransfer; window.importTransfers = importTransfers;
+window.downloadTransferTemplate = downloadTransferTemplate;
+window.addTransferItemRow = addTransferItemRow; window.updateTransferHints = updateTransferHints;
 window.openProductModal = openProductModal; window.saveProduct = saveProduct;
 window.deleteProduct = deleteProduct; window.addProductWarehouseRow = addProductWarehouseRow;
 window.fetchGoldPrice = fetchGoldPrice; window.saveGoldPrice = saveGoldPrice;
